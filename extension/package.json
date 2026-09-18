@@ -1,0 +1,81 @@
+{
+  "name": "branch-diff-colors",
+  "displayName": "Branch Diff Colors",
+  "description": "Colors files in the Explorer that differ from a chosen base branch (committed or not), just like Git's built-in modified/untracked colors.",
+  "version": "0.2.0",
+  "publisher": "sigvet",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sigvet/branch-diff-colors.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sigvet/branch-diff-colors/issues"
+  },
+  "homepage": "https://github.com/sigvet/branch-diff-colors#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "colors": [
+      {
+        "id": "branchDiff.changedResourceForeground",
+        "description": "Color for files that differ from the configured base branch.",
+        "defaults": {
+          "dark": "#e784bf",
+          "light": "#590d44",
+          "highContrast": "#e784bf",
+          "highContrastLight": "#590d44"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Branch Diff Colors",
+      "properties": {
+        "branchDiffColors.baseBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "The branch to compare the current branch against. Files that differ are decorated."
+        },
+        "branchDiffColors.badge": {
+          "type": "string",
+          "default": "B",
+          "maxLength": 2,
+          "description": "Badge letter(s) shown on decorated files (max 2 characters)."
+        },
+        "branchDiffColors.includeUncommitted": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also include uncommitted working-tree changes when computing the diff against the base branch."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "branchDiffColors.setBaseBranch",
+        "title": "Branch Diff Colors: Set Base Branch to Compare Against"
+      },
+      {
+        "command": "branchDiffColors.refresh",
+        "title": "Branch Diff Colors: Refresh"
+      },
+      {
+        "command": "branchDiffColors.pickColor",
+        "title": "Branch Diff Colors: Change Highlight Color"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

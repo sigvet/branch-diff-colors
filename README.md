@@ -13,12 +13,29 @@ decorations only cover uncommitted working-tree state; this fills the gap for
 comparing against an arbitrary base branch like `main`.
 
 <p align="center">
-  <img src="docs/preview.svg" alt="Mockup of Branch Diff Colors: a pink 'B' badge on the src folder and extension.ts, README.md kept in Git's own modified-yellow with the badge still shown, package.json kept in warning-yellow with the badge still shown, and matching pink gutter bars in the editor." width="820">
+  <img src="docs/hero.png" alt="Branch Diff Colors highlighting files and folders in the Explorer, with matching gutter bars in the editor" width="820">
 </p>
 
-<sub>Mockup illustrating the behavior described below — not a live screenshot.</sub>
+## Get started
+
+1. Install from a packaged `.vsix` — grab the latest one from the
+   [Releases page](https://github.com/sigvet/branch-diff-colors/releases/latest),
+   then run:
+   ```bash
+   code --install-extension branch-diff-colors-<version>.vsix
+   ```
+   (Not yet published to the VS Code Marketplace.)
+2. Open a git repository in VS Code.
+3. Set the branch to compare against via the Command Palette:
+   **Branch Diff Colors: Set Base Branch to Compare Against** (defaults to `main`).
+4. Files and folders that differ from that branch now show a `B` badge and
+   highlight color in the Explorer, plus matching gutter bars in the editor.
+
+See [`extension/README.md`](extension/README.md) for the full command list,
+settings, and known limitations.
 
 ## Why
+
 - **Folders get marked too** — just like Git tints a folder when a file
   inside it has uncommitted changes, a folder containing a file that differs
   from your base branch gets the same treatment.
@@ -29,10 +46,8 @@ comparing against an arbitrary base branch like `main`.
   editor use the exact same highlight color as the Explorer badge, so the
   two visuals read as one signal.
 
-See [`extension/README.md`](extension/README.md) for full usage docs,
-settings, and commands.
-
 ## Repository layout
+
 ```
 .
 ├── extension/     # the actual VS Code extension (source, package.json, README)
@@ -47,6 +62,7 @@ The extension is self-contained in [`extension/`](extension) so its own
 from repo-level concerns like CI and licensing.
 
 ## Development
+
 ```bash
 cd extension
 npm install
@@ -57,12 +73,14 @@ Then open the `extension/` folder in VS Code and press `F5` to launch an
 Extension Development Host with the extension active.
 
 ## Building a .vsix
+
 ```bash
 cd extension
 npx @vscode/vsce package
 ```
 
 ## Releasing
+
 Push a tag matching `v*` (e.g. `v0.2.0`) and GitHub Actions will compile,
 package the `.vsix`, and attach it to a new GitHub Release automatically —
 see [`.github/workflows/release.yml`](.github/workflows/release.yml).
@@ -73,8 +91,10 @@ git push origin v0.2.0
 ```
 
 ## Contributing
+
 Issues and PRs welcome. Keep changes scoped to `extension/` unless you're
 touching repo-level tooling (CI, license, docs).
 
 ## License
+
 [MIT](LICENSE)

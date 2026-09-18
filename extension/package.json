@@ -2,7 +2,7 @@
   "name": "branch-diff-colors",
   "displayName": "Branch Diff Colors",
   "description": "Colors files in the Explorer that differ from a chosen base branch (committed or not), just like Git's built-in modified/untracked colors.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "sigvet",
   "license": "MIT",
   "repository": {

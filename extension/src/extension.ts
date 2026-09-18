@@ -233,8 +233,9 @@ class BranchDiffLineHighlighter {
     isWholeLine: true,
     before: {
       contentText: "",
-      border: "0 0 0 3px solid",
-      borderColor: new vscode.ThemeColor(COLOR_ID),
+      backgroundColor: new vscode.ThemeColor(COLOR_ID),
+      width: "3px",
+      height: "100%",
       margin: "0 8px 0 0",
     },
   });

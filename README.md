@@ -42,9 +42,10 @@ settings, and known limitations.
 - **Never fights for attention** — errors/warnings and uncommitted-change
   colors always win. This extension only adds the small `B` badge on top of
   them instead of overriding their color.
-- **Gutter bars match the Explorer color** — the quick-diff bars in the
-  editor use the exact same highlight color as the Explorer badge, so the
-  two visuals read as one signal.
+- **Line markers match the Explorer color** — changed lines get their own
+  colored marker in the editor, in the exact same highlight color as the
+  Explorer badge, owned by this extension rather than VS Code's shared
+  quick-diff gutter, so it never fights Git's own gutter bars for color.
 
 ## Repository layout
 

@@ -4,61 +4,6 @@ import * as path from "path";
 
 const COLOR_ID = "branchDiff.changedResourceForeground";
 const CONFIG_SECTION = "branchDiffColors";
-const ORIGINAL_SCHEME = "branchDiffColorsOriginal";
-
-// Built-in gutter colors used to render our quick-diff line bars. Git's own quick-diff
-// provider owns the "primary" added/modified/deleted keys — those must stay untouched so
-// uncommitted changes keep Git's own color. Ours renders as "secondary" bars instead
-// (VS Code's convention for a second active quick-diff source), kept in sync with our
-// Explorer highlight color so the two visuals match for base-branch-only differences.
-const GUTTER_COLOR_IDS = [
-  "editorGutter.addedSecondaryBackground",
-  "editorGutter.modifiedSecondaryBackground",
-  "editorGutter.deletedSecondaryBackground",
-];
-
-const DEFAULT_COLOR_DARK = "#e784bf";
-const DEFAULT_COLOR_LIGHT = "#590d44";
-
-/** The hex value used for our Explorer badge/text color, resolving the user override or the theme default. */
-function resolveHighlightColor(): string {
-  const workbenchConfig = vscode.workspace.getConfiguration("workbench");
-  const customizations =
-    workbenchConfig.get<Record<string, unknown>>("colorCustomizations") || {};
-  const override = customizations[COLOR_ID];
-  if (typeof override === "string") {
-    return override;
-  }
-  const kind = vscode.window.activeColorTheme.kind;
-  const isLight =
-    kind === vscode.ColorThemeKind.Light ||
-    kind === vscode.ColorThemeKind.HighContrastLight;
-  return isLight ? DEFAULT_COLOR_LIGHT : DEFAULT_COLOR_DARK;
-}
-
-/** Keeps the quick-diff gutter bar colors matched to the Explorer highlight color. */
-async function syncGutterColors(): Promise<void> {
-  const hex = resolveHighlightColor();
-  const workbenchConfig = vscode.workspace.getConfiguration("workbench");
-  const existing =
-    workbenchConfig.get<Record<string, unknown>>("colorCustomizations") || {};
-
-  let changed = false;
-  const updated = { ...existing };
-  for (const id of GUTTER_COLOR_IDS) {
-    if (updated[id] !== hex) {
-      updated[id] = hex;
-      changed = true;
-    }
-  }
-  if (changed) {
-    await workbenchConfig.update(
-      "colorCustomizations",
-      updated,
-      vscode.ConfigurationTarget.Global,
-    );
-  }
-}
 
 function execGit(args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -88,6 +33,12 @@ function toRelativePath(
     return undefined;
   }
   return rel.split(path.sep).join("/");
+}
+
+function escapeRef(ref: string): string {
+  // Defensive guard against obviously-bogus ref names; execFile already avoids
+  // shell interpretation, this just keeps ref lookups sane.
+  return ref.replace(/[^\w\-./]/g, "");
 }
 
 class BranchDiffDecorationProvider implements vscode.FileDecorationProvider {
@@ -238,65 +189,107 @@ function union<T>(a: Set<T>, b: Set<T>): Set<T> {
   return out;
 }
 
-function escapeRef(ref: string): string {
-  // Defensive guard against obviously-bogus ref names; execFile already avoids
-  // shell interpretation, this just keeps ref lookups sane.
-  return ref.replace(/[^\w\-./]/g, "");
+interface Hunk {
+  newStart: number;
+  newLines: number;
+}
+
+/** Parses `@@ -a,b +c,d @@` unified-diff hunk headers, keeping only the "new file" side. */
+function parseHunks(diffOutput: string): Hunk[] {
+  const hunks: Hunk[] = [];
+  const re = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(diffOutput))) {
+    hunks.push({
+      newStart: parseInt(m[1], 10),
+      newLines: m[2] !== undefined ? parseInt(m[2], 10) : 1,
+    });
+  }
+  return hunks;
+}
+
+function hunksToRanges(hunks: Hunk[], lineCount: number): vscode.Range[] {
+  const ranges: vscode.Range[] = [];
+  for (const hunk of hunks) {
+    // A pure deletion has no surviving line in the new file to mark.
+    if (hunk.newLines === 0) continue;
+    const startLine = Math.max(0, hunk.newStart - 1);
+    const endLine = Math.min(lineCount - 1, startLine + hunk.newLines - 1);
+    ranges.push(new vscode.Range(startLine, 0, endLine, 0));
+  }
+  return ranges;
 }
 
 /**
- * Serves the base-branch (merge-base) version of a file's content, so the editor's
- * built-in quick-diff gutter can render added/modified/deleted line bars against it —
- * the same bars Git renders against HEAD, just diffed against the configured branch instead.
+ * Draws our own colored marker next to lines that differ from the base branch, using a
+ * TextEditorDecorationType we fully control. This is independent from VS Code's built-in
+ * quick-diff gutter (which Git's own extension also uses) — that API shares its coloring
+ * across every registered quick-diff source, so it can't reliably show a distinct color
+ * for "differs from base branch" without also recoloring Git's own uncommitted-change bars.
+ * Owning our own decoration avoids that clash entirely.
  */
-class BranchDiffContentProvider implements vscode.TextDocumentContentProvider {
-  private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri>();
-  readonly onDidChange = this._onDidChange.event;
+class BranchDiffLineHighlighter {
+  private readonly decorationType = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    before: {
+      contentText: "",
+      border: "0 0 0 3px solid",
+      borderColor: new vscode.ThemeColor(COLOR_ID),
+      margin: "0 8px 0 0",
+    },
+  });
 
   constructor(private readonly workspaceRoot: string) {}
 
-  async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-    const relativePath = decodeURIComponent(uri.path.replace(/^\//, ""));
+  dispose(): void {
+    this.decorationType.dispose();
+  }
+
+  async updateEditor(editor: vscode.TextEditor | undefined): Promise<void> {
+    if (!editor || editor.document.uri.scheme !== "file") {
+      return;
+    }
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    if (!config.get<boolean>("showLineMarkers", true)) {
+      editor.setDecorations(this.decorationType, []);
+      return;
+    }
+    const relativePath = toRelativePath(
+      this.workspaceRoot,
+      editor.document.uri.fsPath,
+    );
+    if (!relativePath) {
+      editor.setDecorations(this.decorationType, []);
+      return;
+    }
+
     const base = escapeRef(config.get<string>("baseBranch", "main"));
 
     try {
       const mergeBase = (
         await execGit(["merge-base", base, "HEAD"], this.workspaceRoot)
       ).trim();
-      return await execGit(
-        ["show", `${mergeBase}:${relativePath}`],
+      // Diff against the working tree (not HEAD) so line numbers always match the
+      // open buffer exactly, whether or not the changes on top of the base branch
+      // have been committed yet.
+      const diffOutput = await execGit(
+        ["diff", "--unified=0", mergeBase, "--", relativePath],
         this.workspaceRoot,
       );
-    } catch {
-      // No such ref, or the file didn't exist at the merge-base — treat as if it's all new.
-      return "";
-    }
-  }
-
-  /** Tell the editor to re-fetch original content (and thus re-render gutters) for open files. */
-  invalidateOpenDocuments(): void {
-    for (const doc of vscode.workspace.textDocuments) {
-      const relativePath = toRelativePath(this.workspaceRoot, doc.uri.fsPath);
-      if (doc.uri.scheme !== "file" || !relativePath) continue;
-      this._onDidChange.fire(
-        vscode.Uri.from({ scheme: ORIGINAL_SCHEME, path: "/" + relativePath }),
+      const ranges = hunksToRanges(
+        parseHunks(diffOutput),
+        editor.document.lineCount,
       );
+      editor.setDecorations(this.decorationType, ranges);
+    } catch {
+      editor.setDecorations(this.decorationType, []);
     }
   }
-}
 
-class BranchDiffQuickDiffProvider implements vscode.QuickDiffProvider {
-  constructor(private readonly workspaceRoot: string) {}
-
-  provideOriginalResource(uri: vscode.Uri): vscode.ProviderResult<vscode.Uri> {
-    if (uri.scheme !== "file") return undefined;
-    const relativePath = toRelativePath(this.workspaceRoot, uri.fsPath);
-    if (!relativePath) return undefined;
-    return vscode.Uri.from({
-      scheme: ORIGINAL_SCHEME,
-      path: "/" + relativePath,
-    });
+  updateAllVisibleEditors(): void {
+    for (const editor of vscode.window.visibleTextEditors) {
+      this.updateEditor(editor);
+    }
   }
 }
 
@@ -321,45 +314,29 @@ export function activate(context: vscode.ExtensionContext) {
   );
   context.subscriptions.push(statusBarItem);
 
-  // Quick-diff gutter bars (added/modified/deleted line markers), diffed against
-  // the merge-base with the configured branch instead of Git's own HEAD/index.
-  const contentProvider = new BranchDiffContentProvider(workspaceRoot);
-  context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider(
-      ORIGINAL_SCHEME,
-      contentProvider,
-    ),
-  );
-  const sourceControl = vscode.scm.createSourceControl(
-    "branchDiffColors",
-    "Branch Diff Colors",
-    workspaceFolders[0].uri,
-  );
-  sourceControl.quickDiffProvider = new BranchDiffQuickDiffProvider(
-    workspaceRoot,
-  );
-  context.subscriptions.push(sourceControl);
+  const lineHighlighter = new BranchDiffLineHighlighter(workspaceRoot);
+  context.subscriptions.push({ dispose: () => lineHighlighter.dispose() });
 
   const doRefresh = () => {
     provider.refresh(workspaceRoot);
-    contentProvider.invalidateOpenDocuments();
+    lineHighlighter.updateAllVisibleEditors();
   };
 
-  // Refresh on startup, and keep the gutter bars matched to the Explorer highlight color.
+  // Refresh on startup.
   doRefresh();
-  syncGutterColors();
-
-  // The default highlight color differs between light/dark themes; re-sync when the
-  // active theme changes so the gutter bars keep matching.
-  context.subscriptions.push(
-    vscode.window.onDidChangeActiveColorTheme(() => syncGutterColors()),
-  );
 
   // Errors/warnings take priority over our highlight color (see provideFileDecoration),
   // so once diagnostics for a file clear (or appear), its decoration needs to be re-evaluated.
   context.subscriptions.push(
     vscode.languages.onDidChangeDiagnostics((e) =>
       provider.notifyChanged(e.uris),
+    ),
+  );
+
+  // Keep line markers current as editors are opened, switched to, or split.
+  context.subscriptions.push(
+    vscode.window.onDidChangeVisibleTextEditors(() =>
+      lineHighlighter.updateAllVisibleEditors(),
     ),
   );
 
@@ -414,12 +391,12 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("branchDiffColors.pickColor", async () => {
       const hex = await vscode.window.showInputBox({
         prompt:
-          "Hex color for files that differ from the base branch (e.g. #e2c08d)",
-        placeHolder: "#e2c08d",
+          "Hex color for files that differ from the base branch (e.g. #e784bf)",
+        placeHolder: "#e784bf",
         validateInput: (v) =>
           /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v)
             ? undefined
-            : "Enter a valid hex color, e.g. #e2c08d",
+            : "Enter a valid hex color, e.g. #e784bf",
       });
       if (!hex) return;
 
@@ -433,8 +410,6 @@ export function activate(context: vscode.ExtensionContext) {
         updated,
         vscode.ConfigurationTarget.Global,
       );
-      // Keep the gutter line-change bars matched to the same color as the Explorer badge.
-      await syncGutterColors();
       vscode.window.showInformationMessage(
         `Branch Diff Colors: highlight color set to ${hex}`,
       );

@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420" font-family="Menlo, Consolas, monospace">
+  <rect width="900" height="420" fill="#1e1e1e"/>
+
+  <!-- Sidebar / Explorer -->
+  <rect x="0" y="0" width="260" height="420" fill="#252526"/>
+  <text x="16" y="28" fill="#cccccc" font-size="12" letter-spacing="1">EXPLORER</text>
+  <text x="16" y="52" fill="#e8e8e8" font-size="12" font-weight="bold">BRANCH-DIFF-COLORS</text>
+
+  <!-- Folder: src (changed, propagated) -->
+  <text x="16" y="78" fill="#e784bf" font-size="13">v src</text>
+  <rect x="230" y="68" width="16" height="14" rx="3" fill="#e784bf"/>
+  <text x="238" y="78" fill="#1e1e1e" font-size="9" text-anchor="middle" font-weight="bold">B</text>
+
+  <!-- extension.ts: differs from base branch only -> colored + badge -->
+  <text x="34" y="100" fill="#e784bf" font-size="13">extension.ts</text>
+  <rect x="230" y="90" width="16" height="14" rx="3" fill="#e784bf"/>
+  <text x="238" y="100" fill="#1e1e1e" font-size="9" text-anchor="middle" font-weight="bold">B</text>
+
+  <!-- README.md: uncommitted change too -> git color wins, badge still shows -->
+  <text x="34" y="122" fill="#e2c08d" font-size="13">README.md</text>
+  <rect x="230" y="112" width="16" height="14" rx="3" fill="#e784bf"/>
+  <text x="238" y="122" fill="#1e1e1e" font-size="9" text-anchor="middle" font-weight="bold">B</text>
+
+  <!-- package.json: has a warning -> diagnostic color wins, badge still shows -->
+  <text x="34" y="144" fill="#cca700" font-size="13">package.json</text>
+  <rect x="230" y="134" width="16" height="14" rx="3" fill="#e784bf"/>
+  <text x="238" y="144" fill="#1e1e1e" font-size="9" text-anchor="middle" font-weight="bold">B</text>
+
+  <!-- unrelated.ts: unchanged -->
+  <text x="34" y="166" fill="#cccccc" font-size="13">unrelated.ts</text>
+
+  <!-- legend -->
+  <rect x="16" y="330" width="10" height="10" fill="#e784bf"/>
+  <text x="32" y="339" fill="#9d9d9d" font-size="11">differs from base branch</text>
+  <rect x="16" y="350" width="10" height="10" fill="#e2c08d"/>
+  <text x="32" y="359" fill="#9d9d9d" font-size="11">uncommitted change (Git color wins)</text>
+  <rect x="16" y="370" width="10" height="10" fill="#cca700"/>
+  <text x="32" y="379" fill="#9d9d9d" font-size="11">warning (diagnostic color wins)</text>
+
+  <!-- Editor -->
+  <rect x="260" y="0" width="640" height="420" fill="#1e1e1e"/>
+  <text x="284" y="28" fill="#e8e8e8" font-size="12">extension.ts</text>
+  <line x1="260" y1="40" x2="900" y2="40" stroke="#3c3c3c" stroke-width="1"/>
+
+  <!-- gutter bars matching explorer highlight color -->
+  <g font-size="12" fill="#6a6a6a">
+    <text x="290" y="66">12</text>
+    <text x="290" y="88">13</text>
+    <text x="290" y="110">14</text>
+    <text x="290" y="132">15</text>
+    <text x="290" y="154">16</text>
+    <text x="290" y="176">17</text>
+  </g>
+  <rect x="315" y="76" width="3" height="18" fill="#e784bf"/>
+  <rect x="315" y="98" width="3" height="18" fill="#e784bf"/>
+  <rect x="315" y="120" width="3" height="18" fill="#e784bf"/>
+
+  <g font-size="13" fill="#9cdcfe">
+    <text x="330" y="66">export function activate(context) {</text>
+  </g>
+  <g font-size="13" fill="#ce9178">
+    <text x="330" y="88">  const provider = new BranchDiffDecorationProvider();</text>
+  </g>
+  <g font-size="13" fill="#ce9178">
+    <text x="330" y="110">  provider.propagate = true;</text>
+  </g>
+  <g font-size="13" fill="#6a9955">
+    <text x="330" y="132">  // colored gutter bar matches Explorer highlight color</text>
+  </g>
+  <g font-size="13" fill="#d4d4d4">
+    <text x="330" y="154">  syncGutterColors();</text>
+  </g>
+  <g font-size="13" fill="#d4d4d4">
+    <text x="330" y="176">}</text>
+  </g>
+
+  <text x="284" y="400" fill="#6a6a6a" font-size="11">Illustrative mockup — not a live screenshot.</text>
+</svg>

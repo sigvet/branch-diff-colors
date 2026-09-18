@@ -45,7 +45,9 @@ settings, and known limitations.
 - **Line markers match the Explorer color** — changed lines get their own
   colored marker in the editor, in the exact same highlight color as the
   Explorer badge, owned by this extension rather than VS Code's shared
-  quick-diff gutter, so it never fights Git's own gutter bars for color.
+  quick-diff gutter. It only marks lines that differ due to committed
+  history, deferring to Git's own gutter marker for lines that are only
+  uncommitted.
 
 ## Repository layout
 

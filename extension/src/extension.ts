@@ -190,31 +190,73 @@ function union<T>(a: Set<T>, b: Set<T>): Set<T> {
 }
 
 interface Hunk {
+  oldStart: number;
+  oldLines: number;
   newStart: number;
   newLines: number;
 }
 
-/** Parses `@@ -a,b +c,d @@` unified-diff hunk headers, keeping only the "new file" side. */
+/** Parses `@@ -a,b +c,d @@` unified-diff hunk headers. */
 function parseHunks(diffOutput: string): Hunk[] {
   const hunks: Hunk[] = [];
-  const re = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+  const re = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(diffOutput))) {
     hunks.push({
-      newStart: parseInt(m[1], 10),
-      newLines: m[2] !== undefined ? parseInt(m[2], 10) : 1,
+      oldStart: parseInt(m[1], 10),
+      oldLines: m[2] !== undefined ? parseInt(m[2], 10) : 1,
+      newStart: parseInt(m[3], 10),
+      newLines: m[4] !== undefined ? parseInt(m[4], 10) : 1,
     });
   }
   return hunks;
 }
 
-function hunksToRanges(hunks: Hunk[], lineCount: number): vscode.Range[] {
+/**
+ * Maps a [headStart, headEnd] line range (numbered against HEAD) onto the current working
+ * tree, using the HEAD->working-tree hunks. Returns undefined if the range overlaps an
+ * uncommitted edit — that line already has Git's own indicator, so we defer to it entirely
+ * rather than also drawing our own marker on top.
+ */
+function mapHeadRangeToWorkingTree(
+  headStart: number,
+  headEnd: number,
+  uncommittedHunks: Hunk[],
+): { start: number; end: number } | undefined {
+  let offset = 0;
+  for (const hunk of uncommittedHunks) {
+    if (hunk.oldStart > headEnd) break; // this and every later hunk starts after our range
+    const oldEnd = hunk.oldLines > 0 ? hunk.oldStart + hunk.oldLines - 1 : hunk.oldStart;
+    const overlaps = hunk.oldLines > 0 && headStart <= oldEnd && headEnd >= hunk.oldStart;
+    if (overlaps) return undefined;
+    if (oldEnd < headStart) {
+      offset += hunk.newLines - hunk.oldLines;
+    }
+  }
+  return { start: headStart + offset, end: headEnd + offset };
+}
+
+/**
+ * Builds the ranges to decorate: lines that differ between the base branch's merge-base
+ * and HEAD (i.e. committed history), remapped onto the current working tree's line numbers
+ * and dropped wherever an uncommitted edit has since touched that same HEAD line.
+ */
+function computeCommittedLineRanges(
+  committedHunks: Hunk[],
+  uncommittedHunks: Hunk[],
+  lineCount: number,
+): vscode.Range[] {
   const ranges: vscode.Range[] = [];
-  for (const hunk of hunks) {
-    // A pure deletion has no surviving line in the new file to mark.
+  for (const hunk of committedHunks) {
+    // A pure deletion relative to the base branch has no surviving HEAD line to mark.
     if (hunk.newLines === 0) continue;
-    const startLine = Math.max(0, hunk.newStart - 1);
-    const endLine = Math.min(lineCount - 1, startLine + hunk.newLines - 1);
+    const headStart = hunk.newStart;
+    const headEnd = hunk.newStart + hunk.newLines - 1;
+    const mapped = mapHeadRangeToWorkingTree(headStart, headEnd, uncommittedHunks);
+    if (!mapped) continue;
+    const startLine = Math.max(0, mapped.start - 1);
+    const endLine = Math.min(lineCount - 1, mapped.end - 1);
+    if (endLine < startLine) continue;
     ranges.push(new vscode.Range(startLine, 0, endLine, 0));
   }
   return ranges;
@@ -270,15 +312,20 @@ class BranchDiffLineHighlighter {
       const mergeBase = (
         await execGit(["merge-base", base, "HEAD"], this.workspaceRoot)
       ).trim();
-      // Diff against the working tree (not HEAD) so line numbers always match the
-      // open buffer exactly, whether or not the changes on top of the base branch
-      // have been committed yet.
-      const diffOutput = await execGit(
-        ["diff", "--unified=0", mergeBase, "--", relativePath],
+      // Committed-only diff: what differs between the base branch and HEAD.
+      const committedDiff = await execGit(
+        ["diff", "--unified=0", mergeBase, "HEAD", "--", relativePath],
         this.workspaceRoot,
       );
-      const ranges = hunksToRanges(
-        parseHunks(diffOutput),
+      // Uncommitted diff: used to remap HEAD line numbers onto the current buffer, and to
+      // exclude any HEAD lines that have since been further edited (Git already marks those).
+      const uncommittedDiff = await execGit(
+        ["diff", "--unified=0", "HEAD", "--", relativePath],
+        this.workspaceRoot,
+      );
+      const ranges = computeCommittedLineRanges(
+        parseHunks(committedDiff),
+        parseHunks(uncommittedDiff),
         editor.document.lineCount,
       );
       editor.setDecorations(this.decorationType, ranges);

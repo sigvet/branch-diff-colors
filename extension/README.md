@@ -17,10 +17,11 @@ Git's own gutter, so the two never fight over color.
 - Colors and badges (`B` by default) those files — and any parent folder that
   contains one — in the normal Explorer tree, just like Git badges folders
   containing uncommitted changes.
-- Draws a colored marker next to every line that differs from the base
-  branch's merge-base, using a decoration this extension fully owns (not
-  VS Code's shared quick-diff gutter), so it never has to fight Git's own
-  gutter bars for color.
+- Draws a colored marker next to every line that differs due to *committed*
+  history between the base branch's merge-base and HEAD, using a decoration
+  this extension fully owns (not VS Code's shared quick-diff gutter). Lines
+  that are only different because of an uncommitted edit are left to Git's
+  own gutter marker instead — our marker never doubles up on those.
 - Defers to more important signals for the Explorer badge color: if a file
   has errors/warnings, or has its own uncommitted changes, this extension
   only adds the `B` badge — it won't override the color VS Code/Git already
@@ -109,7 +110,7 @@ you'll see both, side by side, rather than one merged indicator.
 - The Explorer badge/color is based on `git diff --name-only <base>...HEAD`
   (merge-base diff), so it reflects files that differ due to your branch's
   own commits — not every file `main` has ever touched.
-- The in-editor line markers diff against the working tree, so they reflect
-  saved content, not unsaved edits, until you save.
+- The in-editor line markers are recomputed from `git diff` on save, so they
+  reflect saved content, not unsaved edits, until you save.
 - No icon-level or full row-background coloring, since that's the limit of
   VS Code's `FileDecorationProvider` API — there's no API for that.

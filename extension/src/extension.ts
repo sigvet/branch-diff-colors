@@ -135,7 +135,6 @@ class BranchDiffDecorationProvider implements vscode.FileDecorationProvider {
     const includeUncommitted = config.get<boolean>("includeUncommitted", false);
 
     try {
-      const previous = union(this.committedFiles, this.uncommittedFiles);
       const nextCommitted = new Set<string>();
       const nextUncommitted = new Set<string>();
 
@@ -168,19 +167,11 @@ class BranchDiffDecorationProvider implements vscode.FileDecorationProvider {
       this.statusBar.text = `$(git-branch) diff:${base} (${nextSet.size})`;
       this.statusBar.tooltip = `Branch Diff Colors: comparing against "${base}". ${nextSet.size} file(s) highlighted.`;
 
-      // Fire change events for anything that flipped state (added or removed).
-      const changedUris: vscode.Uri[] = [];
-      for (const p of union(previous, nextSet)) {
-        if (previous.has(p) !== nextSet.has(p)) {
-          changedUris.push(vscode.Uri.file(p));
-        }
-      }
-      if (changedUris.length > 0) {
-        this._onDidChange.fire(changedUris);
-      } else {
-        // First run: fire a broad refresh so the Explorer picks everything up.
-        this._onDidChange.fire(undefined);
-      }
+      // Always fire a broad refresh rather than a diffed URI list: VS Code only bubbles a
+      // propagated folder decoration up from descendants it has already fetched, so a
+      // partial event that skips still-unchanged files can leave folder colors stale or
+      // missing entirely — most visibly right after switching the base branch.
+      this._onDidChange.fire(undefined);
     } catch (err: any) {
       this.lastError = err.message || String(err);
       this.statusBar.text = `$(warning) branch-diff error`;

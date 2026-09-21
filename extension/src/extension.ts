@@ -3,7 +3,10 @@ import * as cp from "child_process";
 import * as path from "path";
 
 const COLOR_ID = "branchDiff.changedResourceForeground";
+const LINE_BACKGROUND_COLOR_ID = "branchDiff.changedLineBackground";
 const CONFIG_SECTION = "branchDiffColors";
+// Alpha appended to a picked hex color to derive the translucent line background.
+const LINE_BACKGROUND_ALPHA = "26"; // ~15%
 
 function execGit(args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -33,6 +36,13 @@ function toRelativePath(
     return undefined;
   }
   return rel.split(path.sep).join("/");
+}
+
+/** Normalizes `#abc` to `#aabbcc` so an alpha suffix can be appended safely. */
+function expandHex(hex: string): string {
+  const body = hex.slice(1);
+  if (body.length !== 3) return hex;
+  return "#" + [...body].map((c) => c + c).join("");
 }
 
 function escapeRef(ref: string): string {
@@ -189,98 +199,69 @@ function union<T>(a: Set<T>, b: Set<T>): Set<T> {
   return out;
 }
 
-interface Hunk {
-  oldStart: number;
-  oldLines: number;
-  newStart: number;
-  newLines: number;
-}
-
-/** Parses `@@ -a,b +c,d @@` unified-diff hunk headers. */
-function parseHunks(diffOutput: string): Hunk[] {
-  const hunks: Hunk[] = [];
-  const re = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(diffOutput))) {
-    hunks.push({
-      oldStart: parseInt(m[1], 10),
-      oldLines: m[2] !== undefined ? parseInt(m[2], 10) : 1,
-      newStart: parseInt(m[3], 10),
-      newLines: m[4] !== undefined ? parseInt(m[4], 10) : 1,
-    });
-  }
-  return hunks;
-}
-
 /**
- * Maps a [headStart, headEnd] line range (numbered against HEAD) onto the current working
- * tree, using the HEAD->working-tree hunks. Returns undefined if the range overlaps an
- * uncommitted edit — that line already has Git's own indicator, so we defer to it entirely
- * rather than also drawing our own marker on top.
+ * Turns a unified diff into the editor ranges to highlight. `@@ -a,b +c,d @@` headers give
+ * `c` as the 1-based start line on the working-tree side and `d` as how many lines the hunk
+ * contributes there, so a pure deletion (`d == 0`) leaves no line to highlight.
  */
-function mapHeadRangeToWorkingTree(
-  headStart: number,
-  headEnd: number,
-  uncommittedHunks: Hunk[],
-): { start: number; end: number } | undefined {
-  let offset = 0;
-  for (const hunk of uncommittedHunks) {
-    if (hunk.oldStart > headEnd) break; // this and every later hunk starts after our range
-    const oldEnd = hunk.oldLines > 0 ? hunk.oldStart + hunk.oldLines - 1 : hunk.oldStart;
-    const overlaps = hunk.oldLines > 0 && headStart <= oldEnd && headEnd >= hunk.oldStart;
-    if (overlaps) return undefined;
-    if (oldEnd < headStart) {
-      offset += hunk.newLines - hunk.oldLines;
-    }
-  }
-  return { start: headStart + offset, end: headEnd + offset };
-}
-
-/**
- * Builds the ranges to decorate: lines that differ between the base branch's merge-base
- * and HEAD (i.e. committed history), remapped onto the current working tree's line numbers
- * and dropped wherever an uncommitted edit has since touched that same HEAD line.
- */
-function computeCommittedLineRanges(
-  committedHunks: Hunk[],
-  uncommittedHunks: Hunk[],
+function parseChangedLineRanges(
+  diffOutput: string,
   lineCount: number,
 ): vscode.Range[] {
   const ranges: vscode.Range[] = [];
-  for (const hunk of committedHunks) {
-    // A pure deletion relative to the base branch has no surviving HEAD line to mark.
-    if (hunk.newLines === 0) continue;
-    const headStart = hunk.newStart;
-    const headEnd = hunk.newStart + hunk.newLines - 1;
-    const mapped = mapHeadRangeToWorkingTree(headStart, headEnd, uncommittedHunks);
-    if (!mapped) continue;
-    const startLine = Math.max(0, mapped.start - 1);
-    const endLine = Math.min(lineCount - 1, mapped.end - 1);
+  const re = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(diffOutput))) {
+    const newStart = parseInt(m[1], 10);
+    const newLines = m[2] !== undefined ? parseInt(m[2], 10) : 1;
+    if (newLines === 0) continue;
+    const startLine = Math.max(0, newStart - 1);
+    const endLine = Math.min(lineCount - 1, newStart + newLines - 2);
     if (endLine < startLine) continue;
     ranges.push(new vscode.Range(startLine, 0, endLine, 0));
   }
   return ranges;
 }
 
+/** Reads the on/off toggle, honouring the pre-0.4 `showLineMarkers` name. */
+function isLineHighlightEnabled(config: vscode.WorkspaceConfiguration): boolean {
+  const current = config.inspect<boolean>("highlightChangedLines");
+  const currentValue =
+    current?.workspaceFolderValue ??
+    current?.workspaceValue ??
+    current?.globalValue;
+  if (currentValue !== undefined) return currentValue;
+
+  const legacy = config.inspect<boolean>("showLineMarkers");
+  const legacyValue =
+    legacy?.workspaceFolderValue ??
+    legacy?.workspaceValue ??
+    legacy?.globalValue;
+  if (legacyValue !== undefined) return legacyValue;
+
+  return true;
+}
+
 /**
- * Draws our own colored marker next to lines that differ from the base branch, using a
- * TextEditorDecorationType we fully control. This is independent from VS Code's built-in
- * quick-diff gutter (which Git's own extension also uses) — that API shares its coloring
- * across every registered quick-diff source, so it can't reliably show a distinct color
- * for "differs from base branch" without also recoloring Git's own uncommitted-change bars.
- * Owning our own decoration avoids that clash entirely.
+ * Tints the full width of every line that differs from the base branch, the way Error Lens
+ * highlights a line carrying a diagnostic: a translucent whole-line background in the
+ * extension's own color, plus a mark in the overview ruler. Deliberately not a gutter bar —
+ * that channel belongs to Git's quick-diff indicator for uncommitted edits, and two stacked
+ * bars read as noise. A background tint sits in a different visual channel entirely, so both
+ * can be on screen at once without competing.
  */
 class BranchDiffLineHighlighter {
-  private readonly decorationType = vscode.window.createTextEditorDecorationType({
-    isWholeLine: true,
-    before: {
-      contentText: "",
-      backgroundColor: new vscode.ThemeColor(COLOR_ID),
-      width: "3px",
-      height: "100%",
-      margin: "0 8px 0 0",
+  private readonly decorationType = vscode.window.createTextEditorDecorationType(
+    {
+      isWholeLine: true,
+      backgroundColor: new vscode.ThemeColor(LINE_BACKGROUND_COLOR_ID),
+      overviewRulerColor: new vscode.ThemeColor(COLOR_ID),
+      overviewRulerLane: vscode.OverviewRulerLane.Right,
+      // Keep the highlight pinned to the lines it was computed for instead of swallowing
+      // text typed at either edge; a re-run of the diff on save re-establishes the truth.
+      rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
     },
-  });
+  );
 
   constructor(private readonly workspaceRoot: string) {}
 
@@ -293,7 +274,7 @@ class BranchDiffLineHighlighter {
       return;
     }
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
-    if (!config.get<boolean>("showLineMarkers", true)) {
+    if (!isLineHighlightEnabled(config)) {
       editor.setDecorations(this.decorationType, []);
       return;
     }
@@ -312,23 +293,17 @@ class BranchDiffLineHighlighter {
       const mergeBase = (
         await execGit(["merge-base", base, "HEAD"], this.workspaceRoot)
       ).trim();
-      // Committed-only diff: what differs between the base branch and HEAD.
-      const committedDiff = await execGit(
-        ["diff", "--unified=0", mergeBase, "HEAD", "--", relativePath],
+      // merge-base against the working tree (no second ref), so the diff covers everything
+      // this branch changed — committed or not — and its line numbers already refer to the
+      // file as it sits on disk. No remapping needed.
+      const diff = await execGit(
+        ["diff", "--unified=0", mergeBase, "--", relativePath],
         this.workspaceRoot,
       );
-      // Uncommitted diff: used to remap HEAD line numbers onto the current buffer, and to
-      // exclude any HEAD lines that have since been further edited (Git already marks those).
-      const uncommittedDiff = await execGit(
-        ["diff", "--unified=0", "HEAD", "--", relativePath],
-        this.workspaceRoot,
+      editor.setDecorations(
+        this.decorationType,
+        parseChangedLineRanges(diff, editor.document.lineCount),
       );
-      const ranges = computeCommittedLineRanges(
-        parseHunks(committedDiff),
-        parseHunks(uncommittedDiff),
-        editor.document.lineCount,
-      );
-      editor.setDecorations(this.decorationType, ranges);
     } catch {
       editor.setDecorations(this.decorationType, []);
     }
@@ -452,7 +427,14 @@ export function activate(context: vscode.ExtensionContext) {
       const existing =
         workbenchConfig.get<Record<string, unknown>>("colorCustomizations") ||
         {};
-      const updated = { ...existing, [COLOR_ID]: hex };
+      // Theme colors can't be derived from one another at runtime, so the line background
+      // is written alongside as the same hue at low alpha — otherwise picking a new color
+      // would leave the in-editor highlight on the old one.
+      const updated = {
+        ...existing,
+        [COLOR_ID]: hex,
+        [LINE_BACKGROUND_COLOR_ID]: expandHex(hex) + LINE_BACKGROUND_ALPHA,
+      };
       await workbenchConfig.update(
         "colorCustomizations",
         updated,

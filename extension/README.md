@@ -6,9 +6,11 @@ from a chosen base branch** — committed or not — the same way Git's built-in
 `FileDecorationProvider` API, so it's a real Explorer badge + text color, not
 a separate panel.
 
-It also marks changed lines directly in the editor with its own colored
-marker in the same highlight color as the Explorer badge — independent of
-Git's own gutter, so the two never fight over color.
+It also highlights the changed lines directly in the editor — a translucent
+full-width line background in the same hue as the Explorer badge, in the
+style of the Error Lens extension, rather than a gutter bar. That leaves the
+gutter to Git's own uncommitted-change indicator, so both can be on screen
+at once without competing.
 
 ## What it does
 
@@ -17,11 +19,9 @@ Git's own gutter, so the two never fight over color.
 - Colors and badges (`B` by default) those files — and any parent folder that
   contains one — in the normal Explorer tree, just like Git badges folders
   containing uncommitted changes.
-- Draws a colored marker next to every line that differs due to *committed*
-  history between the base branch's merge-base and HEAD, using a decoration
-  this extension fully owns (not VS Code's shared quick-diff gutter). Lines
-  that are only different because of an uncommitted edit are left to Git's
-  own gutter marker instead — our marker never doubles up on those.
+- Tints every editor line that differs from the base branch's merge-base —
+  committed *or* uncommitted — with a translucent whole-line background, plus
+  a mark in the overview ruler so changes are visible in the scrollbar.
 - Defers to more important signals for the Explorer badge color: if a file
   has errors/warnings, or has its own uncommitted changes, this extension
   only adds the `B` badge — it won't override the color VS Code/Git already
@@ -62,8 +62,8 @@ code --install-extension branch-diff-colors-<version>.vsix
   branch name (`main`, `develop`, `origin/main`, etc). Saved per workspace.
 - **Branch Diff Colors: Change Highlight Color** — type a hex color
   (e.g. `#e784bf`). Writes it into your user settings — no manual JSON
-  editing needed. The line markers in the editor pick it up automatically
-  since they reference the same theme color.
+  editing needed. It also writes a matching translucent version of that
+  color for the in-editor line highlight, so both stay in sync.
 - **Branch Diff Colors: Refresh** — force a re-scan if it ever looks stale.
 
 ## Changing the color manually (optional)
@@ -73,13 +73,16 @@ The command above does this for you, but you can also edit it directly in
 
 ```json
 "workbench.colorCustomizations": {
-  "branchDiff.changedResourceForeground": "#e784bf"
+  "branchDiff.changedResourceForeground": "#e784bf",
+  "branchDiff.changedLineBackground": "#e784bf26"
 }
 ```
 
-The in-editor line markers reference this same color, so a single setting
-controls both. The default is `#e784bf` in dark themes and `#590d44` in
-light themes.
+Two separate keys, because a color that reads well as Explorer *text* is far
+too strong as a *background*. The Explorer default is `#e784bf` in dark
+themes and `#590d44` in light themes; the line background defaults to the
+same hue at ~15% alpha. The trailing two hex digits are the alpha channel —
+raise them for a stronger tint, lower them for a subtler one.
 
 ## Settings
 
@@ -88,29 +91,43 @@ light themes.
 | `branchDiffColors.baseBranch`         | `"main"` | Branch to diff against.                                                                      |
 | `branchDiffColors.badge`              | `"B"`    | 1–2 character badge shown on decorated files.                                                |
 | `branchDiffColors.includeUncommitted` | `false`  | Also highlight uncommitted/untracked changes, not just committed diffs from the base branch. |
-| `branchDiffColors.showLineMarkers`    | `true`   | Show the colored line marker in the editor for lines that differ from the base branch.       |
+| `branchDiffColors.highlightChangedLines` | `true` | Highlight editor lines that differ from the base branch with a full-width background tint.  |
 
-## Why not VS Code's built-in quick-diff gutter?
+`branchDiffColors.showLineMarkers` was the old name for
+`highlightChangedLines`. It's deprecated but still honoured, so an existing
+`false` keeps the highlight off until you set the new key.
 
-VS Code's quick-diff gutter (the API Git's own extension uses for its
-add/modify/delete bars) shares its coloring across every registered
-quick-diff source — any third-party provider registered through the public
-API is tagged the same "primary" kind as Git's, and the distinct "secondary"
-color is reserved for VS Code's own multi-provider overlap case, not
-something a third-party extension can claim for itself. Trying to recolor
-those shared keys either does nothing for lines Git already owns, or ends up
-recoloring Git's own uncommitted-change bars too. Owning our own
-`TextEditorDecorationType` instead means the branch-diff markers never
-collide with Git's gutter, at the cost of not sharing screen space with it —
-you'll see both, side by side, rather than one merged indicator.
+## Why a line background instead of a gutter bar?
+
+The first version drew its own bar in the gutter, mimicking Git's
+uncommitted-change indicator. Two bars in the same narrow strip read as
+noise, and they can't be told apart at a glance.
+
+Reusing VS Code's built-in quick-diff gutter isn't an option either: it
+shares its coloring across every registered quick-diff source — any
+third-party provider is tagged the same "primary" kind as Git's, and the
+distinct "secondary" color is reserved for VS Code's own multi-provider
+overlap case. Recoloring those shared keys either does nothing for lines Git
+already owns, or recolors Git's own bars too.
+
+A whole-line background sits in a different visual channel entirely, so the
+branch diff and Git's gutter coexist cleanly — the same reason Error Lens
+tints lines rather than adding another gutter icon.
 
 ## Known limitations
 
 - Assumes a single-root workspace and diffs against `workspaceFolders[0]`.
+- Remote branches (e.g. `origin/main`) work as the base branch without a
+  local copy, but only reflect what you last fetched — run `git fetch` to
+  update the comparison point if the remote has moved on.
 - The Explorer badge/color is based on `git diff --name-only <base>...HEAD`
   (merge-base diff), so it reflects files that differ due to your branch's
   own commits — not every file `main` has ever touched.
-- The in-editor line markers are recomputed from `git diff` on save, so they
-  reflect saved content, not unsaved edits, until you save.
+- The in-editor line highlight is recomputed from `git diff` on save, so it
+  reflects saved content until you save. Existing highlights still shift with
+  your edits in the meantime, they just don't grow to cover new lines.
+- Untracked files aren't line-highlighted — `git diff` doesn't see them.
+  A file added in one of your branch's commits *is* highlighted, and since
+  every line of it is new, the whole file gets tinted.
 - No icon-level or full row-background coloring, since that's the limit of
   VS Code's `FileDecorationProvider` API — there's no API for that.

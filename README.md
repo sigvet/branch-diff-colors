@@ -8,12 +8,12 @@
 
 A VS Code extension that highlights files and folders in the Explorer that
 **differ from another branch** — whether or not those differences are
-committed — plus matching gutter bars in the editor. VS Code's built-in Git
+committed — plus matching line highlights in the editor. VS Code's built-in Git
 decorations only cover uncommitted working-tree state; this fills the gap for
 comparing against an arbitrary base branch like `main`.
 
 <p align="center">
-  <img src="docs/hero.png" alt="Branch Diff Colors highlighting files and folders in the Explorer, with matching gutter bars in the editor" width="820">
+  <img src="docs/hero.png" alt="Branch Diff Colors highlighting files and folders in the Explorer, with matching line highlights in the editor" width="820">
 </p>
 
 ## Get started
@@ -29,7 +29,7 @@ comparing against an arbitrary base branch like `main`.
 3. Set the branch to compare against via the Command Palette:
    **Branch Diff Colors: Set Base Branch to Compare Against** (defaults to `main`).
 4. Files and folders that differ from that branch now show a `B` badge and
-   highlight color in the Explorer, plus matching gutter bars in the editor.
+   highlight color in the Explorer, plus matching line highlights in the editor.
 
 See [`extension/README.md`](extension/README.md) for the full command list,
 settings, and known limitations.
@@ -42,12 +42,11 @@ settings, and known limitations.
 - **Never fights for attention** — errors/warnings and uncommitted-change
   colors always win. This extension only adds the small `B` badge on top of
   them instead of overriding their color.
-- **Line markers match the Explorer color** — changed lines get their own
-  colored marker in the editor, in the exact same highlight color as the
-  Explorer badge, owned by this extension rather than VS Code's shared
-  quick-diff gutter. It only marks lines that differ due to committed
-  history, deferring to Git's own gutter marker for lines that are only
-  uncommitted.
+- **Changed lines are highlighted, not gutter-marked** — lines that differ
+  from the base branch get a translucent full-width background in the same
+  hue as the Explorer badge, the way Error Lens tints a line with a
+  diagnostic. The gutter stays free for Git's own uncommitted-change bars,
+  so the two never overlap or fight over color.
 
 ## Repository layout
 

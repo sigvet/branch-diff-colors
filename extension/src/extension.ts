@@ -5,8 +5,13 @@ import * as path from "path";
 const COLOR_ID = "branchDiff.changedResourceForeground";
 const LINE_BACKGROUND_COLOR_ID = "branchDiff.changedLineBackground";
 const CONFIG_SECTION = "branchDiffColors";
-// Alpha appended to a picked hex color to derive the translucent line background.
-const LINE_BACKGROUND_ALPHA = "26"; // ~15%
+// The line background is deliberately *not* the Explorer color: a whole-line tint needs a
+// deeper pink on dark themes and a paler one on light themes to stay legible behind text.
+// These mirror the `branchDiff.changedLineBackground` defaults in package.json.
+const LINE_BACKGROUND_DARK_SHADE = -0.45; // mix the picked color toward black
+const LINE_BACKGROUND_LIGHT_SHADE = 0.55; // mix the picked color toward white
+const LINE_BACKGROUND_DARK_ALPHA = "66"; // ~40%
+const LINE_BACKGROUND_LIGHT_ALPHA = "73"; // ~45%
 
 function execGit(args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -43,6 +48,22 @@ function expandHex(hex: string): string {
   const body = hex.slice(1);
   if (body.length !== 3) return hex;
   return "#" + [...body].map((c) => c + c).join("");
+}
+
+/**
+ * Mixes a `#rrggbb` color toward white (`amount > 0`) or black (`amount < 0`), so the
+ * in-editor line tint can be a darker or lighter pink than the Explorer foreground.
+ */
+function shadeHex(hex: string, amount: number): string {
+  const body = expandHex(hex).slice(1);
+  const target = amount > 0 ? 255 : 0;
+  const ratio = Math.abs(amount);
+  const channels = [0, 2, 4].map((i) => {
+    const value = parseInt(body.slice(i, i + 2), 16);
+    const mixed = Math.round(value + (target - value) * ratio);
+    return Math.max(0, Math.min(255, mixed)).toString(16).padStart(2, "0");
+  });
+  return "#" + channels.join("");
 }
 
 function escapeRef(ref: string): string {
@@ -199,28 +220,194 @@ function union<T>(a: Set<T>, b: Set<T>): Set<T> {
   return out;
 }
 
+/** One `@@ -oldStart,oldCount +newStart,newCount @@` hunk of a unified diff, body included. */
+interface DiffHunk {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  /** The `-` lines: how the hunk reads on the base side. */
+  oldLines: string[];
+}
+
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+function parseHunks(diffOutput: string): DiffHunk[] {
+  const hunks: DiffHunk[] = [];
+  let current: DiffHunk | undefined;
+  for (const raw of diffOutput.split("\n")) {
+    const header = HUNK_HEADER.exec(raw);
+    if (header) {
+      current = {
+        oldStart: parseInt(header[1], 10),
+        oldCount: header[2] !== undefined ? parseInt(header[2], 10) : 1,
+        newStart: parseInt(header[3], 10),
+        newCount: header[4] !== undefined ? parseInt(header[4], 10) : 1,
+        oldLines: [],
+      };
+      hunks.push(current);
+      continue;
+    }
+    // The `--- a/x` / `+++ b/x` preamble only ever precedes the first header, so there is no
+    // hunk open yet when it goes by.
+    if (!current) continue;
+    if (raw.startsWith("-")) {
+      current.oldLines.push(raw.slice(1));
+    } else if (!raw.startsWith("+") && !raw.startsWith("\\")) {
+      // Neither a `+` line nor a "\ No newline at end of file" marker: the hunk body is over.
+      current = undefined;
+    }
+  }
+  return hunks;
+}
+
+/** One editor line that differs from the base branch, with how that line reads on the base. */
+interface ChangedLine {
+  /** 0-based line in the document as it sits on disk. */
+  line: number;
+  /** The base-branch content this line replaced, absent for lines the branch purely added. */
+  baseText?: string;
+}
+
 /**
- * Turns a unified diff into the editor ranges to highlight. `@@ -a,b +c,d @@` headers give
- * `c` as the 1-based start line on the working-tree side and `d` as how many lines the hunk
- * contributes there, so a pure deletion (`d == 0`) leaves no line to highlight.
+ * The base-branch content behind the `i`-th new line of a hunk. A hunk can replace more base
+ * lines than it produces, so the last new line also carries whatever the branch deleted
+ * outright — otherwise those lines would silently vanish from the annotation.
  */
-function parseChangedLineRanges(
-  diffOutput: string,
+function baseTextForIndex(hunk: DiffHunk, i: number): string | undefined {
+  if (i >= hunk.oldLines.length) return undefined;
+  const upTo = i === hunk.newCount - 1 ? hunk.oldLines.length : i + 1;
+  return hunk.oldLines.slice(i, upTo).join("\n");
+}
+
+/**
+ * Turns a diff taken directly against the working tree into changed lines. `@@ -a,b +c,d @@`
+ * gives `c` as the 1-based start line on the new side and `d` as how many lines the hunk
+ * contributes there, so a pure deletion (`d == 0`) leaves no line to mark.
+ */
+function collectWorkingTreeLines(
+  hunks: DiffHunk[],
   lineCount: number,
-): vscode.Range[] {
+): ChangedLine[] {
+  const changed: ChangedLine[] = [];
+  for (const hunk of hunks) {
+    for (let i = 0; i < hunk.newCount; i++) {
+      const line = hunk.newStart - 1 + i;
+      if (line < 0 || line >= lineCount) continue;
+      changed.push({ line, baseText: baseTextForIndex(hunk, i) });
+    }
+  }
+  return changed;
+}
+
+/**
+ * Translates a 1-based line number in the committed (HEAD) file into the corresponding line
+ * in the file as it currently sits on disk, given the HEAD→working-tree hunks. Returns
+ * `undefined` when the line no longer exists because a local edit deleted it.
+ */
+function mapHeadLineToWorkingTree(
+  line: number,
+  localHunks: DiffHunk[],
+): number | undefined {
+  let offset = 0;
+  for (const hunk of localHunks) {
+    if (hunk.oldCount === 0) {
+      // Pure insertion recorded as `-a,0`: `a` is the HEAD line it was inserted *after*.
+      if (line > hunk.oldStart) offset += hunk.newCount;
+      continue;
+    }
+    const oldEnd = hunk.oldStart + hunk.oldCount - 1;
+    if (oldEnd < line) {
+      offset += hunk.newCount - hunk.oldCount;
+      continue;
+    }
+    if (hunk.oldStart > line) break; // hunks are ordered; the rest are past this line
+    // The line itself was edited locally. If it survived, anchor it inside the hunk's
+    // replacement so a branch-changed line stays marked even after being touched.
+    if (hunk.newCount === 0) return undefined;
+    return hunk.newStart + Math.min(line - hunk.oldStart, hunk.newCount - 1);
+  }
+  return line + offset;
+}
+
+/**
+ * Maps the committed base→HEAD hunks onto the on-disk file, so uncommitted edits shift the
+ * highlight along instead of being reported as branch changes themselves.
+ */
+function collectCommittedLines(
+  committedHunks: DiffHunk[],
+  localHunks: DiffHunk[],
+  lineCount: number,
+): ChangedLine[] {
+  // A local edit can collapse several committed lines onto one line on disk; the first
+  // base-branch counterpart wins so the annotation stays stable.
+  const byLine = new Map<number, ChangedLine>();
+  for (const hunk of committedHunks) {
+    for (let i = 0; i < hunk.newCount; i++) {
+      const mapped = mapHeadLineToWorkingTree(hunk.newStart + i, localHunks);
+      if (mapped === undefined) continue;
+      const line = mapped - 1;
+      if (line < 0 || line >= lineCount || byLine.has(line)) continue;
+      byLine.set(line, { line, baseText: baseTextForIndex(hunk, i) });
+    }
+  }
+  return [...byLine.values()].sort((a, b) => a.line - b.line);
+}
+
+/** Collapses the changed lines into as few whole-line ranges as possible. */
+function toRanges(changed: ChangedLine[]): vscode.Range[] {
+  const lines = [...new Set(changed.map((c) => c.line))].sort((a, b) => a - b);
   const ranges: vscode.Range[] = [];
-  const re = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(diffOutput))) {
-    const newStart = parseInt(m[1], 10);
-    const newLines = m[2] !== undefined ? parseInt(m[2], 10) : 1;
-    if (newLines === 0) continue;
-    const startLine = Math.max(0, newStart - 1);
-    const endLine = Math.min(lineCount - 1, newStart + newLines - 2);
-    if (endLine < startLine) continue;
-    ranges.push(new vscode.Range(startLine, 0, endLine, 0));
+  let start: number | undefined;
+  let previous: number | undefined;
+  for (const line of lines) {
+    if (start === undefined || previous === undefined) {
+      start = previous = line;
+      continue;
+    }
+    if (line === previous + 1) {
+      previous = line;
+      continue;
+    }
+    ranges.push(new vscode.Range(start, 0, previous, 0));
+    start = previous = line;
+  }
+  if (start !== undefined && previous !== undefined) {
+    ranges.push(new vscode.Range(start, 0, previous, 0));
   }
   return ranges;
+}
+
+/**
+ * Builds the end-of-line annotations that show how each changed line reads on the base
+ * branch, the way Error Lens parks a diagnostic message to the right of the code.
+ */
+function toBaseTextAnnotations(
+  changed: ChangedLine[],
+  document: vscode.TextDocument,
+  base: string,
+  maxLength: number,
+): vscode.DecorationOptions[] {
+  const annotations: vscode.DecorationOptions[] = [];
+  for (const { line, baseText } of changed) {
+    if (baseText === undefined) continue; // the branch added this line; nothing to quote
+    const collapsed = baseText.replace(/\s+/g, " ").trim();
+    if (!collapsed) continue;
+    const truncated =
+      collapsed.length > maxLength
+        ? collapsed.slice(0, Math.max(1, maxLength - 1)) + "…"
+        : collapsed;
+    const end = document.lineAt(line).range.end;
+    annotations.push({
+      range: new vscode.Range(end, end),
+      // The full, untruncated line stays reachable on hover.
+      hoverMessage: new vscode.MarkdownString(
+        `On \`${base}\`:\n\n\`\`\`\n${baseText}\n\`\`\``,
+      ),
+      renderOptions: { after: { contentText: `  ← ${truncated}` } },
+    });
+  }
+  return annotations;
 }
 
 /** Reads the on/off toggle, honouring the pre-0.4 `showLineMarkers` name. */
@@ -249,6 +436,9 @@ function isLineHighlightEnabled(config: vscode.WorkspaceConfiguration): boolean 
  * that channel belongs to Git's quick-diff indicator for uncommitted edits, and two stacked
  * bars read as noise. A background tint sits in a different visual channel entirely, so both
  * can be on screen at once without competing.
+ *
+ * By default only committed differences count, matching `includeUncommitted`: an unsaved or
+ * merely-saved local edit is Git's quick-diff story, not a branch difference.
  */
 class BranchDiffLineHighlighter {
   private readonly decorationType = vscode.window.createTextEditorDecorationType(
@@ -263,10 +453,29 @@ class BranchDiffLineHighlighter {
     },
   );
 
+  // The end-of-line quote of the base-branch version. Separate from the background tint so it
+  // can carry per-line text, and so it uses the main (Explorer) color the user picked.
+  private readonly annotationType = vscode.window.createTextEditorDecorationType(
+    {
+      after: {
+        color: new vscode.ThemeColor(COLOR_ID),
+        fontStyle: "italic",
+        margin: "0 0 0 2em",
+      },
+      rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    },
+  );
+
   constructor(private readonly workspaceRoot: string) {}
 
   dispose(): void {
     this.decorationType.dispose();
+    this.annotationType.dispose();
+  }
+
+  private clear(editor: vscode.TextEditor): void {
+    editor.setDecorations(this.decorationType, []);
+    editor.setDecorations(this.annotationType, []);
   }
 
   async updateEditor(editor: vscode.TextEditor | undefined): Promise<void> {
@@ -275,7 +484,7 @@ class BranchDiffLineHighlighter {
     }
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     if (!isLineHighlightEnabled(config)) {
-      editor.setDecorations(this.decorationType, []);
+      this.clear(editor);
       return;
     }
     const relativePath = toRelativePath(
@@ -283,29 +492,64 @@ class BranchDiffLineHighlighter {
       editor.document.uri.fsPath,
     );
     if (!relativePath) {
-      editor.setDecorations(this.decorationType, []);
+      this.clear(editor);
       return;
     }
 
     const base = escapeRef(config.get<string>("baseBranch", "main"));
+    const includeUncommitted = config.get<boolean>("includeUncommitted", false);
+    const lineCount = editor.document.lineCount;
 
     try {
       const mergeBase = (
         await execGit(["merge-base", base, "HEAD"], this.workspaceRoot)
       ).trim();
-      // merge-base against the working tree (no second ref), so the diff covers everything
-      // this branch changed — committed or not — and its line numbers already refer to the
-      // file as it sits on disk. No remapping needed.
-      const diff = await execGit(
-        ["diff", "--unified=0", mergeBase, "--", relativePath],
-        this.workspaceRoot,
-      );
+
+      let changed: ChangedLine[];
+      if (includeUncommitted) {
+        // merge-base against the working tree (no second ref), so the diff covers everything
+        // this branch changed — committed or not — and its line numbers already refer to the
+        // file as it sits on disk. No remapping needed.
+        const diff = await execGit(
+          ["diff", "--unified=0", mergeBase, "--", relativePath],
+          this.workspaceRoot,
+        );
+        changed = collectWorkingTreeLines(parseHunks(diff), lineCount);
+      } else {
+        // Committed-only: diff merge-base against HEAD, never the working tree, so merely
+        // saving a file can't make its lines look like branch changes. Those line numbers
+        // refer to the committed file, so they're then shifted by the local HEAD→disk edits.
+        const [committedDiff, localDiff] = await Promise.all([
+          execGit(
+            ["diff", "--unified=0", mergeBase, "HEAD", "--", relativePath],
+            this.workspaceRoot,
+          ),
+          execGit(
+            ["diff", "--unified=0", "HEAD", "--", relativePath],
+            this.workspaceRoot,
+          ),
+        ]);
+        changed = collectCommittedLines(
+          parseHunks(committedDiff),
+          parseHunks(localDiff),
+          lineCount,
+        );
+      }
+
+      editor.setDecorations(this.decorationType, toRanges(changed));
       editor.setDecorations(
-        this.decorationType,
-        parseChangedLineRanges(diff, editor.document.lineCount),
+        this.annotationType,
+        config.get<boolean>("showBaseBranchText", true)
+          ? toBaseTextAnnotations(
+              changed,
+              editor.document,
+              config.get<string>("baseBranch", "main"),
+              Math.max(8, config.get<number>("baseBranchTextMaxLength", 120)),
+            )
+          : [],
       );
     } catch {
-      editor.setDecorations(this.decorationType, []);
+      this.clear(editor);
     }
   }
 
@@ -427,13 +671,23 @@ export function activate(context: vscode.ExtensionContext) {
       const existing =
         workbenchConfig.get<Record<string, unknown>>("colorCustomizations") ||
         {};
-      // Theme colors can't be derived from one another at runtime, so the line background
-      // is written alongside as the same hue at low alpha — otherwise picking a new color
-      // would leave the in-editor highlight on the old one.
+      // Theme colors can't be derived from one another at runtime, so the line background is
+      // written alongside — otherwise picking a new color would leave the in-editor highlight
+      // on the old one. It's shaded off the picked hue rather than reusing it: darker for dark
+      // themes, lighter for light ones, which is what a whole-line tint needs to stay readable.
+      const kind = vscode.window.activeColorTheme.kind;
+      const isLight =
+        kind === vscode.ColorThemeKind.Light ||
+        kind === vscode.ColorThemeKind.HighContrastLight;
+      const lineBackground =
+        shadeHex(
+          hex,
+          isLight ? LINE_BACKGROUND_LIGHT_SHADE : LINE_BACKGROUND_DARK_SHADE,
+        ) + (isLight ? LINE_BACKGROUND_LIGHT_ALPHA : LINE_BACKGROUND_DARK_ALPHA);
       const updated = {
         ...existing,
         [COLOR_ID]: hex,
-        [LINE_BACKGROUND_COLOR_ID]: expandHex(hex) + LINE_BACKGROUND_ALPHA,
+        [LINE_BACKGROUND_COLOR_ID]: lineBackground,
       };
       await workbenchConfig.update(
         "colorCustomizations",

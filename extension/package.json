@@ -2,7 +2,7 @@
   "name": "branch-diff-colors",
   "displayName": "Branch Diff Colors",
   "description": "Colors files in the Explorer that differ from a chosen base branch (committed or not), just like Git's built-in modified/untracked colors.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "sigvet",
   "license": "MIT",
   "repository": {
@@ -33,12 +33,12 @@
       },
       {
         "id": "branchDiff.changedLineBackground",
-        "description": "Background highlight for editor lines that differ from the configured base branch. Use a translucent color so the text stays readable.",
+        "description": "Background highlight for editor lines that differ from the configured base branch. A deeper pink on dark themes and a pale pink on light ones, so the tint reads as a highlight behind the text rather than as the Explorer color.",
         "defaults": {
-          "dark": "#e784bf26",
-          "light": "#590d4418",
-          "highContrast": "#e784bf40",
-          "highContrastLight": "#590d4430"
+          "dark": "#7f486966",
+          "light": "#f4c8e273",
+          "highContrast": "#7f486999",
+          "highContrastLight": "#f4c8e2a6"
         }
       }
     ],
@@ -59,12 +59,23 @@
         "branchDiffColors.includeUncommitted": {
           "type": "boolean",
           "default": false,
-          "description": "Also include uncommitted working-tree changes when computing the diff against the base branch."
+          "description": "Also include uncommitted working-tree changes when computing the diff against the base branch. When off, only committed history is compared, so saving a file does not mark it — or its lines — as differing from the base branch."
         },
         "branchDiffColors.highlightChangedLines": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Highlight the full width of every editor line that differs from the base branch, in the style of Error Lens. Restyle it with the `branchDiff.changedLineBackground` color."
+        },
+        "branchDiffColors.showBaseBranchText": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show how each changed line reads on the base branch as italic text to the right of the line, in the `branchDiff.changedResourceForeground` color. Lines the branch purely added have no base version, so they get no text."
+        },
+        "branchDiffColors.baseBranchTextMaxLength": {
+          "type": "number",
+          "default": 120,
+          "minimum": 8,
+          "markdownDescription": "Maximum number of characters shown in the base-branch text before it is truncated. The full line is still available on hover."
         },
         "branchDiffColors.showLineMarkers": {
           "type": "boolean",

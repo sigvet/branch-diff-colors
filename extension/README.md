@@ -7,10 +7,11 @@ from a chosen base branch** — committed or not — the same way Git's built-in
 a separate panel.
 
 It also highlights the changed lines directly in the editor — a translucent
-full-width line background in the same hue as the Explorer badge, in the
-style of the Error Lens extension, rather than a gutter bar. That leaves the
-gutter to Git's own uncommitted-change indicator, so both can be on screen
-at once without competing.
+full-width line background, in the style of the Error Lens extension, rather
+than a gutter bar. That leaves the gutter to Git's own uncommitted-change
+indicator, so both can be on screen at once without competing. Next to each
+changed line it prints, in the Explorer color, how that line reads on the
+base branch.
 
 ## What it does
 
@@ -19,9 +20,14 @@ at once without competing.
 - Colors and badges (`B` by default) those files — and any parent folder that
   contains one — in the normal Explorer tree, just like Git badges folders
   containing uncommitted changes.
-- Tints every editor line that differs from the base branch's merge-base —
-  committed *or* uncommitted — with a translucent whole-line background, plus
-  a mark in the overview ruler so changes are visible in the scrollbar.
+- Tints every editor line that differs from the base branch's merge-base with
+  a translucent whole-line background, plus a mark in the overview ruler so
+  changes are visible in the scrollbar. Like the Explorer decoration, this
+  follows `includeUncommitted`: by default it compares committed history only,
+  so merely saving a file never marks its lines.
+- Prints the base-branch version of each changed line to the right of it, in
+  the Explorer color — the same place Error Lens puts a diagnostic message.
+  Hover it to see the full, untruncated line.
 - Defers to more important signals for the Explorer badge color: if a file
   has errors/warnings, or has its own uncommitted changes, this extension
   only adds the `B` badge — it won't override the color VS Code/Git already
@@ -62,8 +68,9 @@ code --install-extension branch-diff-colors-<version>.vsix
   branch name (`main`, `develop`, `origin/main`, etc). Saved per workspace.
 - **Branch Diff Colors: Change Highlight Color** — type a hex color
   (e.g. `#e784bf`). Writes it into your user settings — no manual JSON
-  editing needed. It also writes a matching translucent version of that
-  color for the in-editor line highlight, so both stay in sync.
+  editing needed. It also writes a matching line-background color shaded off
+  that hue — darker on dark themes, lighter on light ones — so both stay in
+  sync.
 - **Branch Diff Colors: Refresh** — force a re-scan if it ever looks stale.
 
 ## Changing the color manually (optional)
@@ -74,15 +81,26 @@ The command above does this for you, but you can also edit it directly in
 ```json
 "workbench.colorCustomizations": {
   "branchDiff.changedResourceForeground": "#e784bf",
-  "branchDiff.changedLineBackground": "#e784bf26"
+  "branchDiff.changedLineBackground": "#7f486966"
 }
 ```
 
 Two separate keys, because a color that reads well as Explorer *text* is far
-too strong as a *background*. The Explorer default is `#e784bf` in dark
-themes and `#590d44` in light themes; the line background defaults to the
-same hue at ~15% alpha. The trailing two hex digits are the alpha channel —
-raise them for a stronger tint, lower them for a subtler one.
+too strong as a *background*, and the two want to move in opposite directions
+per theme:
+
+| Key                                    | Dark theme        | Light theme       |
+| -------------------------------------- | ----------------- | ----------------- |
+| `branchDiff.changedResourceForeground` | `#e784bf`         | `#590d44`         |
+| `branchDiff.changedLineBackground`     | `#7f486966` (deep pink) | `#f4c8e273` (pale pink) |
+
+The line background is a **darker** pink on dark themes and a **lighter** pink
+on light themes, so the tint sits behind the text instead of competing with
+it. The trailing two hex digits are the alpha channel — raise them for a
+stronger tint, lower them for a subtler one.
+
+The base-branch text printed to the right of each line uses
+`branchDiff.changedResourceForeground`, so it always matches the Explorer.
 
 ## Settings
 
@@ -90,8 +108,10 @@ raise them for a stronger tint, lower them for a subtler one.
 | ------------------------------------- | -------- | -------------------------------------------------------------------------------------------- |
 | `branchDiffColors.baseBranch`         | `"main"` | Branch to diff against.                                                                      |
 | `branchDiffColors.badge`              | `"B"`    | 1–2 character badge shown on decorated files.                                                |
-| `branchDiffColors.includeUncommitted` | `false`  | Also highlight uncommitted/untracked changes, not just committed diffs from the base branch. |
+| `branchDiffColors.includeUncommitted` | `false`  | Also count uncommitted/untracked changes, not just committed diffs from the base branch. Applies to both the Explorer decoration and the line highlight. |
 | `branchDiffColors.highlightChangedLines` | `true` | Highlight editor lines that differ from the base branch with a full-width background tint.  |
+| `branchDiffColors.showBaseBranchText` | `true`   | Print the base-branch version of each changed line to the right of it.                       |
+| `branchDiffColors.baseBranchTextMaxLength` | `120` | Truncate that text after this many characters. The full line stays available on hover.     |
 
 `branchDiffColors.showLineMarkers` was the old name for
 `highlightChangedLines`. It's deprecated but still honoured, so an existing
@@ -123,9 +143,15 @@ tints lines rather than adding another gutter icon.
 - The Explorer badge/color is based on `git diff --name-only <base>...HEAD`
   (merge-base diff), so it reflects files that differ due to your branch's
   own commits — not every file `main` has ever touched.
-- The in-editor line highlight is recomputed from `git diff` on save, so it
-  reflects saved content until you save. Existing highlights still shift with
-  your edits in the meantime, they just don't grow to cover new lines.
+- The in-editor line highlight is recomputed from `git diff` on save. With
+  `includeUncommitted` off (the default) it reports only committed branch
+  changes, remapping their line numbers through your local edits so the
+  highlight follows the code as you insert and delete lines above it.
+  Highlights also shift with unsaved edits, they just don't grow to cover new
+  lines until the next save.
+- A base line that your branch deleted outright has no line left to annotate,
+  so it's folded into the annotation on the last surviving line of its hunk.
+  A hunk that is *only* a deletion leaves nothing to highlight at all.
 - Untracked files aren't line-highlighted — `git diff` doesn't see them.
   A file added in one of your branch's commits *is* highlighted, and since
   every line of it is new, the whole file gets tinted.

@@ -43,10 +43,17 @@ settings, and known limitations.
   colors always win. This extension only adds the small `B` badge on top of
   them instead of overriding their color.
 - **Changed lines are highlighted, not gutter-marked** — lines that differ
-  from the base branch get a translucent full-width background in the same
-  hue as the Explorer badge, the way Error Lens tints a line with a
-  diagnostic. The gutter stays free for Git's own uncommitted-change bars,
-  so the two never overlap or fight over color.
+  from the base branch get a translucent full-width background, the way Error
+  Lens tints a line with a diagnostic: a deeper pink on dark themes, a paler
+  one on light themes. The gutter stays free for Git's own uncommitted-change
+  bars, so the two never overlap or fight over color.
+- **You can see what the line used to say** — each changed line prints its
+  base-branch version to the right, in the Explorer color, so you can read
+  the before and after without opening a diff view.
+- **Saving a file isn't a branch change** — by default only committed history
+  is compared, so a file you merely saved stays unmarked. Flip
+  `branchDiffColors.includeUncommitted` on if you want working-tree edits
+  counted too.
 
 ## Repository layout
 

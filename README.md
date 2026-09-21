@@ -13,7 +13,7 @@ decorations only cover uncommitted working-tree state; this fills the gap for
 comparing against an arbitrary base branch like `main`.
 
 <p align="center">
-  <img src="docs/hero.png" alt="Branch Diff Colors highlighting files and folders in the Explorer, with matching line highlights in the editor" width="820">
+  <img src="docs/bdc-hero.png" alt="Branch Diff Colors highlighting files and folders in the Explorer, with matching line highlights in the editor" width="820">
 </p>
 
 ## Get started

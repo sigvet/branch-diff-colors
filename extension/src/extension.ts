@@ -72,6 +72,86 @@ function escapeRef(ref: string): string {
   return ref.replace(/[^\w\-./]/g, "");
 }
 
+const GIT_SHOW_SCHEME = "branchDiffColorsGit";
+
+/** A read-only virtual document backed by `git show <ref>:<path>`, for the diff editor's base-branch pane. */
+function gitShowUri(ref: string, relativePath: string): vscode.Uri {
+  return vscode.Uri.from({
+    scheme: GIT_SHOW_SCHEME,
+    path: "/" + relativePath,
+    query: encodeURIComponent(ref),
+  });
+}
+
+class GitShowContentProvider implements vscode.TextDocumentContentProvider {
+  constructor(private readonly workspaceRoot: string) {}
+
+  async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+    const ref = decodeURIComponent(uri.query);
+    const relativePath = uri.path.slice(1);
+    try {
+      return await execGit(
+        ["show", `${ref}:${relativePath}`],
+        this.workspaceRoot,
+      );
+    } catch {
+      // The branch added this file outright, so it has no blob at the base ref.
+      return "";
+    }
+  }
+}
+
+/**
+ * Opens a two-pane diff, the way VS Code's own "Open Changes" does for uncommitted edits:
+ * the file's content at the base branch's merge-base on the left, the file as it sits on
+ * disk (working tree, live-editable) on the right. `revealLine` scrolls the right-hand pane
+ * to a specific line, for the "compare this line" entry in the editor context menu.
+ */
+async function compareFileWithBase(
+  workspaceRoot: string,
+  target: vscode.Uri | undefined,
+  revealLine?: number,
+): Promise<void> {
+  const fileUri = target ?? vscode.window.activeTextEditor?.document.uri;
+  if (!fileUri || fileUri.scheme !== "file") {
+    vscode.window.showWarningMessage("Branch Diff Colors: no file to compare.");
+    return;
+  }
+  const relativePath = toRelativePath(workspaceRoot, fileUri.fsPath);
+  if (!relativePath) {
+    vscode.window.showWarningMessage(
+      "Branch Diff Colors: file is outside the workspace.",
+    );
+    return;
+  }
+
+  const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+  const base = escapeRef(config.get<string>("baseBranch", "main"));
+
+  try {
+    const mergeBase = (
+      await execGit(["merge-base", base, "HEAD"], workspaceRoot)
+    ).trim();
+    const baseUri = gitShowUri(mergeBase, relativePath);
+    const title = `${path.basename(relativePath)} (${base} ↔ Working Tree)`;
+    const options: vscode.TextDocumentShowOptions | undefined =
+      revealLine === undefined
+        ? undefined
+        : { selection: new vscode.Range(revealLine, 0, revealLine, 0) };
+    await vscode.commands.executeCommand(
+      "vscode.diff",
+      baseUri,
+      fileUri,
+      title,
+      options,
+    );
+  } catch (err: any) {
+    vscode.window.showErrorMessage(
+      `Branch Diff Colors: ${err.message || String(err)}`,
+    );
+  }
+}
+
 class BranchDiffDecorationProvider implements vscode.FileDecorationProvider {
   private readonly _onDidChange = new vscode.EventEmitter<
     vscode.Uri | vscode.Uri[] | undefined
@@ -457,6 +537,10 @@ class BranchDiffLineHighlighter {
     },
   );
 
+  // Which lines the "compare this line" editor-context-menu entry should show up on,
+  // keyed by document URI so it survives switching between editors.
+  private readonly changedLinesByUri = new Map<string, Set<number>>();
+
   constructor(private readonly workspaceRoot: string) {}
 
   dispose(): void {
@@ -464,9 +548,14 @@ class BranchDiffLineHighlighter {
     this.annotationType.dispose();
   }
 
+  hasChangedLine(uri: vscode.Uri, line: number): boolean {
+    return this.changedLinesByUri.get(uri.toString())?.has(line) ?? false;
+  }
+
   private clear(editor: vscode.TextEditor): void {
     editor.setDecorations(this.decorationType, []);
     editor.setDecorations(this.annotationType, []);
+    this.changedLinesByUri.delete(editor.document.uri.toString());
   }
 
   async updateEditor(editor: vscode.TextEditor | undefined): Promise<void> {
@@ -539,15 +628,19 @@ class BranchDiffLineHighlighter {
             )
           : [],
       );
+      this.changedLinesByUri.set(
+        editor.document.uri.toString(),
+        new Set(changed.map((c) => c.line)),
+      );
     } catch {
       this.clear(editor);
     }
   }
 
-  updateAllVisibleEditors(): void {
-    for (const editor of vscode.window.visibleTextEditors) {
-      this.updateEditor(editor);
-    }
+  async updateAllVisibleEditors(): Promise<void> {
+    await Promise.all(
+      vscode.window.visibleTextEditors.map((editor) => this.updateEditor(editor)),
+    );
   }
 }
 
@@ -575,9 +668,35 @@ export function activate(context: vscode.ExtensionContext) {
   const lineHighlighter = new BranchDiffLineHighlighter(workspaceRoot);
   context.subscriptions.push({ dispose: () => lineHighlighter.dispose() });
 
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(
+      GIT_SHOW_SCHEME,
+      new GitShowContentProvider(workspaceRoot),
+    ),
+  );
+
+  // Gates the "Compare Line with Base Branch" editor-context-menu entry to lines that are
+  // actually highlighted, since right-clicking moves the cursor there first.
+  const updateLineChangedContext = (editor: vscode.TextEditor | undefined) => {
+    const isChanged =
+      editor !== undefined &&
+      editor.document.uri.scheme === "file" &&
+      lineHighlighter.hasChangedLine(
+        editor.document.uri,
+        editor.selection.active.line,
+      );
+    vscode.commands.executeCommand(
+      "setContext",
+      "branchDiffColors.lineChanged",
+      isChanged,
+    );
+  };
+
   const doRefresh = () => {
     provider.refresh(workspaceRoot);
-    lineHighlighter.updateAllVisibleEditors();
+    lineHighlighter
+      .updateAllVisibleEditors()
+      .then(() => updateLineChangedContext(vscode.window.activeTextEditor));
   };
 
   // Refresh on startup.
@@ -596,6 +715,16 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.onDidChangeVisibleTextEditors(() =>
       lineHighlighter.updateAllVisibleEditors(),
     ),
+  );
+
+  // Keep the "compare this line" menu gating current as the cursor/active editor moves.
+  context.subscriptions.push(
+    vscode.window.onDidChangeTextEditorSelection((e) =>
+      updateLineChangedContext(e.textEditor),
+    ),
+  );
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(updateLineChangedContext),
   );
 
   // Refresh whenever the checked-out branch changes (HEAD updates on checkout/commit).
@@ -642,6 +771,32 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("branchDiffColors.refresh", doRefresh),
+  );
+
+  // Command: Explorer/command-palette entry to open a side-by-side diff of a file against
+  // the base branch's merge-base, the way Source Control's "Open Changes" does for HEAD.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "branchDiffColors.compareFileWithBase",
+      (uri?: vscode.Uri) => compareFileWithBase(workspaceRoot, uri),
+    ),
+  );
+
+  // Command: same diff, but from the editor's right-click menu on a highlighted line, and
+  // scrolled to that line.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "branchDiffColors.compareLineWithBase",
+      () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) return;
+        compareFileWithBase(
+          workspaceRoot,
+          editor.document.uri,
+          editor.selection.active.line,
+        );
+      },
+    ),
   );
 
   // Command: change the highlight color without hand-editing settings.json.

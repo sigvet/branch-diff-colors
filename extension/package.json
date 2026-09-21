@@ -2,7 +2,7 @@
   "name": "branch-diff-colors",
   "displayName": "Branch Diff Colors",
   "description": "Colors files in the Explorer that differ from a chosen base branch (committed or not), just like Git's built-in modified/untracked colors.",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "publisher": "sigvet",
   "license": "MIT",
   "repository": {
@@ -97,8 +97,32 @@
       {
         "command": "branchDiffColors.pickColor",
         "title": "Branch Diff Colors: Change Highlight Color"
+      },
+      {
+        "command": "branchDiffColors.compareFileWithBase",
+        "title": "Branch Diff Colors: Compare File with Base Branch"
+      },
+      {
+        "command": "branchDiffColors.compareLineWithBase",
+        "title": "Branch Diff Colors: Compare Line with Base Branch"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "branchDiffColors.compareFileWithBase",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "3_compare"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "branchDiffColors.compareLineWithBase",
+          "when": "resourceScheme == file && branchDiffColors.lineChanged",
+          "group": "z_branchDiffColors"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

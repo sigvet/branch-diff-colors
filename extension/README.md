@@ -72,6 +72,13 @@ code --install-extension branch-diff-colors-<version>.vsix
   that hue — darker on dark themes, lighter on light ones — so both stay in
   sync.
 - **Branch Diff Colors: Refresh** — force a re-scan if it ever looks stale.
+- **Branch Diff Colors: Compare File with Base Branch** — also on a file's
+  right-click menu in the Explorer. Opens a side-by-side diff against the
+  base branch, the way Source Control's "Open Changes" does for uncommitted
+  edits.
+- **Branch Diff Colors: Compare Line with Base Branch** — right-click a
+  highlighted line in the editor to open the same diff, scrolled to that
+  line.
 
 ## Changing the color manually (optional)
 

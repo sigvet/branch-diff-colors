@@ -215,6 +215,7 @@ class BranchDiffDecorationProvider implements vscode.FileDecorationProvider {
     const includeUncommitted = config.get<boolean>("includeUncommitted", false);
 
     try {
+      const previous = union(this.committedFiles, this.uncommittedFiles);
       const nextCommitted = new Set<string>();
       const nextUncommitted = new Set<string>();
 
@@ -247,11 +248,20 @@ class BranchDiffDecorationProvider implements vscode.FileDecorationProvider {
       this.statusBar.text = `$(git-branch) diff:${base} (${nextSet.size})`;
       this.statusBar.tooltip = `Branch Diff Colors: comparing against "${base}". ${nextSet.size} file(s) highlighted.`;
 
-      // Always fire a broad refresh rather than a diffed URI list: VS Code only bubbles a
-      // propagated folder decoration up from descendants it has already fetched, so a
-      // partial event that skips still-unchanged files can leave folder colors stale or
-      // missing entirely — most visibly right after switching the base branch.
-      this._onDidChange.fire(undefined);
+      // `provideFileDecoration` is only ever invoked for a file actually rendered in the
+      // tree, so a still-collapsed folder can only inherit its color from a descendant
+      // whose decoration was proactively fetched — which only happens for URIs named here.
+      // A broad `fire(undefined)` looks appealing but is actively worse: it flushes VS
+      // Code's entire cache for this provider, and anything hidden inside a collapsed
+      // folder then has nothing to re-populate it until that folder is expanded. So name
+      // every currently- and previously-relevant file explicitly, every refresh, even the
+      // ones that didn't change membership.
+      const allRelevant = union(previous, nextSet);
+      if (allRelevant.size > 0) {
+        this._onDidChange.fire(
+          [...allRelevant].map((p) => vscode.Uri.file(p)),
+        );
+      }
     } catch (err: any) {
       this.lastError = err.message || String(err);
       this.statusBar.text = `$(warning) branch-diff error`;
